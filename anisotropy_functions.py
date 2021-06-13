@@ -5,14 +5,109 @@ Created on Mon May 10 21:26:32 2021
 @author: Iveta
 """
 
+'''
+
+Experimental assumptions under this work: 
+    sdt.data[0] - M2 TCSPC card - perpendicular decay 
+    sdt.data[1] - M1 TCSPC card - parallel decay 
+    in case of lifetime data where the parallel detector has been shut down, sdt.data[1] will be empty 
+
+Future: 
+    0. parametrise the functions so they can easily be done for anisotropy as well as lifetime decays 
+    1. control when matplotlib plots close and stay open  
+    2. intergrate G factor in the main code 
+    3. interactive plots - draw vertical lines and save them after they are closed 
+    4. log file containing the following info 
+    - chosen indexes 
+    - 
+'''
+
 import os 
 import numpy as np 
 from sdtfile import * 
 import matplotlib.pyplot as plt
+from sklearn.preprocessing import MinMaxScaler
 
+
+
+def bin_image(data):
+    '''
+    This function takes an image stack (3D array) and performs a 
+    3x3 binning (or bin=1 by SPCImage / Becker & Hickl convention), 
+    by summing the photons of the immediate neighbouring pixels in each
+    stack/slice/time channel. 
+
+    Parameters
+    ----------
+    data : image data, a 3D array (e.g. x, y and time dimension)
+
+    Returns
+    -------
+    binned : 3x3 binned image 
+
+    '''
+    t,y,x = data.shape
+    binned = np.zeros((t,y,x))   # create empty array of same dims to hold the data
+    for t in range(t): 
+        for i in range(y): 
+            for j in range(x): 
+                print(binned)
+                if i == 0:  # entire first row  
+                    if j == 0:   # top left corner 
+                        binned[t,i,j] = np.sum([[data[t,i,j] for j in range(j,j+2)] for i in range(i, i+2)]) 
+                    elif j == x-1: # top right corner
+                        binned[t,i,j] = np.sum([[data[t,i,j] for j in range(j-1,j+1)] for i in range(i, i+2)]) 
+                    else: # on edge (non-corner) of first row 
+                        binned[t,i,j] = np.sum([[data[t,i,j] for j in range(j-1,j+2)] for i in range(i, i+2)]) 
+                        
+                elif i == y-1 :  # entire last row  
+                    if j == 0:   # bottom left corner 
+                        binned[t,i,j] = np.sum([[data[t,i,j] for j in range(j,j+2)] for i in range(i-1, i+1)]) 
+                    elif j == x-1:  # bottom right corner
+                        binned[t,i,j] = np.sum([[data[t,i,j] for j in range(j-1,j+1)] for i in range(i-1, i+1)])  
+                    else: # on edge (non-corner) of last row 
+                        binned[t,i,j] = np.sum([[data[t,i,j] for j in range(j-1,j+2)] for i in range(i-1, i+1)])  
+                
+                elif j == 0: # entire first column, corners should be caught by now 
+                    binned[t,i,j] = np.sum([[data[t,i,j] for j in range(j,j+2)] for i in range(i-1, i+2)])   
+                
+                elif j == x-1: # entire last column 
+                    binned[t,i,j] = np.sum([[data[t,i,j] for j in range(j-1,j+1)] for i in range(i-1, i+2)])    
+                
+                else:      # if on the inside of matrix
+                    binned[t,i,j] = np.sum([[data[t,i,j] for j in range(j-1,j+2)] for i in range(i-1, i+2)])
+                print('next')
+    return binned 
+
+
+def convolve_IRF(IRF,decay,time): 
+    '''
+    This function convoles a lifetime decay with an instrument response function. 
+
+    Parameters
+    ----------
+    IRF : numpy array of instrument response function
+    decay : numpy array of decay we want to convolve 
+    time : numpy array of time vector in nanoseconds 
+
+    Returns
+    -------
+    convolved : the original convolved decay 
+    convolvedNorm : the convolved decay normalised to the decay counts
+
+    '''
+    dx = time[1] - len[0]   # in ns, difference between each bin 
+    convolved = np.convolve(IRF, decay)[:len(time)]*dx 
+    convolvedNorm = convolved*(max(decay)/max(convolved))  # for the plotting normalise
+    plt.plot(time, decay, label = 'raw decay')
+    plt.plot(time, convolvedNorm, label = 'convolved decay')
+    plt.legend(loc = 'upper right')
+    plt.show()    
+    return convolved, convolvedNorm
+    
 def read_sdt(cwd, filename): 
     '''
-    This function reads any Becker&Hickl single decay .sdt file, uses sdt 
+    This function reads any Becker&Hickl .sdt file, uses sdt 
     library (from sdtfile import *) to return the file in SdtFile 
     format. This file is later used in process_sdt() to read the individual
     decays and times in numpy array format.
@@ -24,7 +119,7 @@ def read_sdt(cwd, filename):
 
     Returns
     -------
-    data : data read by SdtFile
+    data : data read by SdtFile - SdtFile object 
 
     '''
     cwd = cwd
@@ -56,7 +151,39 @@ def read_gfactor(cwd):
             print(file)
     data = SdtFile(path)
     return data
+
+def get_image_info(data): 
+    x,y,t = data.data[0].shape   # return tuple of pixels along x and y direction and number of time bins 
+    return f'This image has {x} x {y} pixels and {t} time channels'
     
+def process_sdt_image(data): 
+    '''
+    This function takes the SdtObject (raw anisotropy image data) 
+    and returns the perpendicular and parallel matrix decays as 3D
+    numpy arrays (third dimension is the photon count in each of the time bins).
+
+    Parameters
+    ----------
+    data : SdtObject (image with parallel and perpendicular decay component)
+
+    Returns
+    -------
+    perpimage : 3D numpy array holding perpendicular image data 
+    parimage : 3D numpy array holding perpendicular image data 
+    time : 1D numpy array holding the time in seconds 
+    timens : 1D numpy array holding the time in nanoseconds 
+    bins : scalar, number of time bins 
+
+    '''
+    perpimage = np.array(data.data[0]) # return an x by y by t matrix 
+    parimage = np.array(data.data[1])
+    time = np.array(data.times[0])   # return array of times in seconds 
+    bins = len(time)
+    ns = 1000000000
+    timens = np.multiply(time,ns)  # time array in nanoseconds 
+    return perpimage, parimage, time, timens, bins 
+    
+
 def process_sdt(data): 
     '''
     This function takes the single SdtFile anisotropy file, 
@@ -84,8 +211,7 @@ def process_sdt(data):
     bins = len(time)
     ns = 1000000000
     time = np.multiply(time,ns)   ## convert to ns 
-    return perpdecay,  pardecay, time, bins
-
+    return perpdecay,  pardecay, time, bins   
 
 ## plot decay in log 
 def plot_decay(perpdecay, pardecay, time, scale, title = 'Fluorescence decay'): 
@@ -183,6 +309,7 @@ def background_subtract(perpdecay, pardecay, time):
     for i in range(len(boundaries)):
         boundaries_x.append(boundaries[i][0])
         plt.axvline(boundaries_x[i], color='r')  # add vertical line 
+    #plt.savefig('Gfactor_range')
     plt.close()    
     # Get indices for the background delimiters- i.e. the number of counts in these bins 
     BG_indices = find_nearest_neighbor_index(time, boundaries_x)
@@ -197,13 +324,76 @@ def background_subtract(perpdecay, pardecay, time):
     pardecay = pardecay - BG
     
     plot_decay(perpdecay, pardecay, time, 'log', 'background corrected')
-    
+    plt.close()
     # Replace all negative values by 0
     #perpdecay = np.where(perpdecay < 0, 0, perpdecay)
     #pardecay = np.where(pardecay < 0, 0, pardecay)
    
     return  BG_indices, perpdecay, pardecay, BG
 
+def background_subtract_lifetime(data, time):
+    '''
+    This function plots logarithmically the single decay. 
+    The user has to choose two points on 
+    the plot to show the area where the background counts are 
+    (i.e. before the peak) 
+    The average photon intensity/counts within this time range 
+    is calculated and subtracted from each time bin in the decay.
+    
+    Requires find_nearest_neighbor_index() function. 
+
+    Parameters
+    ----------
+    data : numpy array that holds the data 
+    time: time vector as numpy array
+
+    Returns
+    -------
+    BG_indices : 
+    data : background subtracted perpendicular decay data as numpy array 
+    BG : the averaged background used for the subtraction 
+
+    '''
+    
+    # Plot decay
+    x = time
+    y = data
+    #plt.switch_backend('Qt5Agg')
+    plt.plot(x, y)
+    plt.xlabel('Time (ns)') 
+    plt.ylabel('Intensity (photons)') 
+    plt.yscale('log')
+    plt.title('Select background range (2 points)') 
+    plt.show() 
+    
+    # Select background region and draw on plot
+    boundaries = plt.ginput(2)
+    
+    # Update L with x_points array
+    boundaries_x = []
+    for i in range(len(boundaries)):
+        boundaries_x.append(boundaries[i][0])
+        plt.axvline(boundaries_x[i], color='r')  # add vertical line 
+    #plt.savefig('Gfactor_range')
+    plt.close()    
+    # Get indices for the background delimiters- i.e. the number of counts in these bins 
+    BG_indices = find_nearest_neighbor_index(time, boundaries_x)
+    # Calculate background by averaging - use perpendicular decay 
+    # BG_sum - sum of intensities in this time window (BG_indices[0] and [1])
+    BG_sum = sum([data[i] for i in range(BG_indices[0], BG_indices[1] + 1)])
+    # BG_indices[1] - BG_indices[0] + 1 => how many time bins selected? 
+    BG = BG_sum / (BG_indices[1] - BG_indices[0] + 1)
+
+    # Subtract background from decay
+    data = data - BG
+    
+    #plot_decay(perpdecay, pardecay, time, 'log', 'background corrected')
+    plt.close()
+    # Replace all negative values by 0
+    #perpdecay = np.where(perpdecay < 0, 0, perpdecay)
+    #pardecay = np.where(pardecay < 0, 0, pardecay)
+   
+    return  BG_indices, data, BG
 
 def get_peaks(perp, par): 
     '''
@@ -223,9 +413,9 @@ def get_peaks(perp, par):
     '''
     peak_perp = np.argmax(perp)
     peak_par = np.argmax(par)
+    print(f'Perpendicular peak at index {peak_perp}')
+    print(f'Parallel peak at index {peak_par}')
     return peak_perp, peak_par
-
-
 
 
 def align_peaks(perpdecay,pardecay, time): 
@@ -238,8 +428,8 @@ def align_peaks(perpdecay,pardecay, time):
     It shows a plot of the aligned peaks. 
     
     Returns four variables: 
-        the decays of the aligned peaks, 
-        the peak index 
+        the decays of the peaks,aligned  
+        the peak index - index of the maximum counts 
         the shift (in index values)
     
     '''
@@ -257,6 +447,8 @@ def align_peaks(perpdecay,pardecay, time):
             
     
     plot_decay(perpdecay, pardecay, time, 'log', 'Peaks aligned' )
+    plt.pause(5)
+    plt.close()
     return perpdecay, pardecay, peak_index, shift
 
 def get_gfactor(Gfact, t, peak_idx):
@@ -285,8 +477,10 @@ def get_gfactor(Gfact, t, peak_idx):
     '''
     plt.plot(t, Gfact)
     plt.xlim([t[peak_idx],50])
-    plt.ylim([-5,5])
+    plt.ylim([0,2])
     plt.suptitle('Select G factor range')
+    plt.ylabel('I(par)/I(perp)')
+    plt.xlabel('Time (ns')
     
     # select area that os 
     boundaries = plt.ginput(2)
@@ -303,6 +497,71 @@ def get_gfactor(Gfact, t, peak_idx):
     Gvalue = G_sum / (G_indices[1] - G_indices[0] + 1)
     return Gvalue
 
+
+def plot_lifetimes(DOPCtotal, DPPCtotal, time, scale = True, title = 'Lifetime decays'): 
+    '''
+    Accepts the total intensity of two different samples (here DOPC and DPPC:Chol, in this order), 
+    calculated by Ipar + 2*G*Iperp, normalizes according to the decay with the greater intensity
+    and plots them on a logarithmic scale.
+    
+    It is possible to plot the non-normalized decays by passing scale = False, as well as 
+    to change the default title, by passing title = 'My title'. 
+    '''
+    if scale: 
+        # find which one has the greater intensity and scale the other decay 
+        # according to it 
+        if DOPCtotal.max() > DPPCtotal.max(): 
+            scaler = MinMaxScaler(feature_range = (DOPCtotal.min(), DOPCtotal.max()))
+            DPPCtotal = scaler.fit_transform(DPPCtotal.reshape(-1,1))
+        else: 
+            scaler = MinMaxScaler(feature_range = (DPPCtotal.min(), DPPCtotal.max()))
+            DOPCtotal = scaler.fit_transform(DOPCtotal.reshape(-1,1))
+    plt.plot(time, DOPCtotal, label = 'DOPC')
+    plt.plot(time, DPPCtotal, label = 'DPPC:Chol')
+    plt.legend(loc = 'upper right')
+    plt.suptitle(title, fontsize = 16)
+    plt.yscale('log')
+    plt.ylabel('Normalized counts')
+    plt.xlabel('Time (ns')
+    plt.show()
+    
+    
+
+def plot_anisotropy_decay(perp, par, G, time, bgcorr = True, align = True, from_peak = True, 
+                         title = 'Anisotropy decay'):
+    '''
+    This function takes the perp and parallel component, as well as the time vector 
+    and the G value. After background subtraction (requires user input) and peak alignment, 
+    it calculates the anisotropy decay as per [(Ipar - GIperp)/Itotal] and plots it from 
+    the peak onwards (pass from_peak = False to plot the entire decay). 
+    
+    Returns the full anisotropy decay decay, as well as the peak index of the aligned decays. 
+    '''
+    # first bg correction 
+    if bgcorr: 
+        _, perp, par, _ = background_subtract(perp, par, time)
+    else: 
+        perp = perp 
+        par = par
+    # second peak alignment 
+    if align: 
+        perp,par, peak_idx, shift = align_peaks(perp,par,time)
+    else: 
+        perp = perp
+        par = par
+        peak_idx, _ = get_peaks(perp,par)
+    total = np.add(par, (2*G*perp))
+    r_decay = np.divide(np.subtract(par, G*perp),total)
+    plt.plot(time, r_decay)
+    if from_peak: 
+        plt.xlim(time[peak_idx], 50)  # plot only from peak 
+    plt.ylim(-0.5,1)
+    plt.suptitle(title, fontsize = 16)
+    plt.xlabel('Time (ns')
+    plt.ylabel('Anisotropy (r)')
+    #plt.close()
+    return r_decay, peak_idx
+    
 # some small helpers functions 
 
 def count_zeros(perpdecay, pardecay, bins = 4096):
