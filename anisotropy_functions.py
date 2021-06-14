@@ -12,6 +12,8 @@ Experimental assumptions under this work:
     sdt.data[1] - M1 TCSPC card - parallel decay 
     in case of lifetime data where the parallel detector has been shut down, sdt.data[1] will be empty 
 
+The data has to be reshaped in (t,x,y) format, in accordance with numpy array shape convention. 
+
 Future: 
     0. parametrise the functions so they can easily be done for anisotropy as well as lifetime decays 
     1. control when matplotlib plots close and stay open  
@@ -29,6 +31,38 @@ import matplotlib.pyplot as plt
 from sklearn.preprocessing import MinMaxScaler
 
 
+def create_lifetime_decay_img(perp, par, G): 
+    '''
+    This function takes the perpendicular and parallel images 
+    and creates a lifetime image by pixel-wise application 
+    of the formula Ipar + 2 * G * Iperp. 
+    It is important the input image shape is (t,x,y), i.e. the time 
+    channel is first and both images have identical shape. 
+    
+    Parameters
+    ----------
+    perp : perpendicular image, a 3D array of shape (t,x,y)
+    par : parallel image, a 3D array of shape (t,x,y)
+    
+    Returns
+    -------
+    lifetime : a single 3D array (image) containing lifetime decays 
+    in each pixel. 
+    '''
+    if perp.shape != par.shape: 
+        print('Per and par images have uneven size, check transform!')
+        #break 
+    else: 
+        pass 
+    dims = perp.shape
+    t = dims[0]
+    x = dims[1]
+    y = dims[2]
+    lifetime = np.empty_like(perp)
+    for i in range(x):  
+        for j in range(y): 
+            lifetime[:,i,j] = np.add(par[:,i,j], (2.0*G*perp[:,i,j]))
+    return lifetime 
 
 def bin_image(data):
     '''
@@ -36,49 +70,91 @@ def bin_image(data):
     3x3 binning (or bin=1 by SPCImage / Becker & Hickl convention), 
     by summing the photons of the immediate neighbouring pixels in each
     stack/slice/time channel. 
+    The image data has to be of the shape (t,x,y), i.e. the time
+    channel dimension has to be first. This can be achieved by 
+    data.transform((2,0,1))
 
     Parameters
     ----------
     data : image data, a 3D array (e.g. x, y and time dimension)
-
+    xdim : size of x dimension of image 
+    ydim : size of y dimension of image 
+    t : number of stacks/slices/time channels 
+        
     Returns
     -------
-    binned : 3x3 binned image 
+    binned : 3x3 binned image ; array of float64 
 
     '''
-    t,y,x = data.shape
-    binned = np.zeros((t,y,x))   # create empty array of same dims to hold the data
-    for t in range(t): 
-        for i in range(y): 
-            for j in range(x): 
-                print(binned)
-                if i == 0:  # entire first row  
-                    if j == 0:   # top left corner 
-                        binned[t,i,j] = np.sum([[data[t,i,j] for j in range(j,j+2)] for i in range(i, i+2)]) 
-                    elif j == x-1: # top right corner
-                        binned[t,i,j] = np.sum([[data[t,i,j] for j in range(j-1,j+1)] for i in range(i, i+2)]) 
-                    else: # on edge (non-corner) of first row 
-                        binned[t,i,j] = np.sum([[data[t,i,j] for j in range(j-1,j+2)] for i in range(i, i+2)]) 
+    dims = data.shape 
+    t = dims[0]
+    x = dims[1]
+    y = dims[2]
+    print(f'Image dimensions x by y by t: {x,y,t}')
+    #print(f'Image.shape: {data.shape}')
+    binned = np.zeros_like(data)   # create empty array of same dims to hold the data
+    #print(f'Empty bin dimensions: {binned.shape}')
+    #print(binned)
+    for i in range(x):  # iterate columns 
+        #print(f'x = {i} of total {x} pixels ')
+        for j in range(y):   # iterate along rows
+            #print(f'y = {j} of total {y} pixels ')
+            if i == 0:  # entire first row  
+                if j == 0:   # top left corner 
+                    binned[:,i,j] = np.sum([[data[:,i,j] for j in range(j,j+2)] for i in range(i, i+2)], axis=0).sum(axis=0) 
+                elif j == y-1: # top right corner
+                    binned[:,i,j] = np.sum([[data[:,i,j] for j in range(j-1,j+1)] for i in range(i, i+2)], axis=0).sum(axis=0)
+                else: # on edge (non-corner) of first row 
+                    binned[:,i,j] = np.sum([[data[:,i,j] for j in range(j-1,j+2)] for i in range(i, i+2)], axis=0).sum(axis=0) 
                         
-                elif i == y-1 :  # entire last row  
-                    if j == 0:   # bottom left corner 
-                        binned[t,i,j] = np.sum([[data[t,i,j] for j in range(j,j+2)] for i in range(i-1, i+1)]) 
-                    elif j == x-1:  # bottom right corner
-                        binned[t,i,j] = np.sum([[data[t,i,j] for j in range(j-1,j+1)] for i in range(i-1, i+1)])  
-                    else: # on edge (non-corner) of last row 
-                        binned[t,i,j] = np.sum([[data[t,i,j] for j in range(j-1,j+2)] for i in range(i-1, i+1)])  
+            elif i == x-1 :  # entire last row  
+                if j == 0:   # bottom left corner 
+                    binned[:,i,j] = np.sum([[data[:,i,j] for j in range(j,j+2)] for i in range(i-1, i+1)], axis=0).sum(axis=0) 
+                elif j == y-1:  # bottom right corner
+                    binned[:,i,j] = np.sum([[data[:,i,j] for j in range(j-1,j+1)] for i in range(i-1, i+1)], axis=0).sum(axis=0)  
+                else: # on edge (non-corner) of last row 
+                    binned[:,i,j]= np.sum([[data[:,i,j] for j in range(j-1,j+2)] for i in range(i-1, i+1)], axis=0).sum(axis=0)  
                 
-                elif j == 0: # entire first column, corners should be caught by now 
-                    binned[t,i,j] = np.sum([[data[t,i,j] for j in range(j,j+2)] for i in range(i-1, i+2)])   
+            elif j == 0: # entire first column, corners should be caught by now 
+                binned[:,i,j] = np.sum([[data[:,i,j] for j in range(j,j+2)] for i in range(i-1, i+2)], axis=0).sum(axis=0)   
                 
-                elif j == x-1: # entire last column 
-                    binned[t,i,j] = np.sum([[data[t,i,j] for j in range(j-1,j+1)] for i in range(i-1, i+2)])    
+            elif j == y-1: # entire last column 
+                binned[:,i,j]= np.sum([[data[:,i,j] for j in range(j-1,j+1)] for i in range(i-1, i+2)], axis=0).sum(axis=0)    
                 
-                else:      # if on the inside of matrix
-                    binned[t,i,j] = np.sum([[data[t,i,j] for j in range(j-1,j+2)] for i in range(i-1, i+2)])
-                print('next')
+            else:      # if on the inside of matrix
+                binned[:,i,j]= np.sum([[data[:,i,j] for j in range(j-1,j+2)] for i in range(i-1, i+2)], axis=0).sum(axis=0)
     return binned 
 
+def projection(data, xdim, ydim, t):
+    '''
+    This function takes an image stack (3D array) and sums up all 
+    values in all time bins into a single plane i.e. creates a 
+    projection of the 3D image. 
+
+    Parameters
+    ----------
+    data : image data, a 3D array (e.g. x, y and time dimension)
+    xdim : size of x dimension of image 
+    ydim : size of y dimension of image 
+    t : number of stacks/slices/time channels 
+        
+    Returns
+    -------
+    binned : 3x3 binned image ; array of float64 
+
+    '''
+    bins = t
+    x  = xdim
+    y = ydim
+    #print(f'Image dimensions from params: {x,y,t}')
+    #print(f'Image.shape: {data.shape}')
+    projection = np.empty((bins,x,y))   # create empty array of same dims to hold the data
+    #print(f'Empty bin dimensions: {binned.shape}')
+    #print(binned)
+    for i in range(x):  # iterate columns 
+        for j in range(y):   # iterate along rows
+            projection[:,i,j] = np.sum(data[:,i,j])  # [:] - sums all of them along the time axis                 
+    return projection[0,:,:] 
 
 def convolve_IRF(IRF,decay,time): 
     '''
@@ -152,10 +228,7 @@ def read_gfactor(cwd):
     data = SdtFile(path)
     return data
 
-def get_image_info(data): 
-    x,y,t = data.data[0].shape   # return tuple of pixels along x and y direction and number of time bins 
-    return f'This image has {x} x {y} pixels and {t} time channels'
-    
+
 def process_sdt_image(data): 
     '''
     This function takes the SdtObject (raw anisotropy image data) 
@@ -168,10 +241,10 @@ def process_sdt_image(data):
 
     Returns
     -------
-    perpimage : 3D numpy array holding perpendicular image data 
-    parimage : 3D numpy array holding perpendicular image data 
-    time : 1D numpy array holding the time in seconds 
-    timens : 1D numpy array holding the time in nanoseconds 
+    perpimage : uint16 : 3D numpy array holding perpendicular image data 
+    parimage : uint16 : 3D numpy array holding perpendicular image data 
+    time : float64 1D numpy array holding the time in seconds 
+    timens : float64 1D numpy array holding the time in nanoseconds 
     bins : scalar, number of time bins 
 
     '''
