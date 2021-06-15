@@ -29,7 +29,8 @@ import numpy as np
 from sdtfile import * 
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import MinMaxScaler
-
+from scipy.signal import savgol_filter
+import scipy.optimize
 
 def create_lifetime_decay_img(perp, par, G): 
     '''
@@ -125,7 +126,7 @@ def bin_image(data):
                 binned[:,i,j]= np.sum([[data[:,i,j] for j in range(j-1,j+2)] for i in range(i-1, i+2)], axis=0).sum(axis=0)
     return binned 
 
-def projection(data, xdim, ydim, t):
+def projection(data):
     '''
     This function takes an image stack (3D array) and sums up all 
     values in all time bins into a single plane i.e. creates a 
@@ -133,7 +134,7 @@ def projection(data, xdim, ydim, t):
 
     Parameters
     ----------
-    data : image data, a 3D array (e.g. x, y and time dimension)
+    data : image data, a 3D array of shape (t,x,y)
     xdim : size of x dimension of image 
     ydim : size of y dimension of image 
     t : number of stacks/slices/time channels 
@@ -143,12 +144,10 @@ def projection(data, xdim, ydim, t):
     binned : 3x3 binned image ; array of float64 
 
     '''
-    bins = t
-    x  = xdim
-    y = ydim
+    t,x,y = data.shape 
     #print(f'Image dimensions from params: {x,y,t}')
     #print(f'Image.shape: {data.shape}')
-    projection = np.empty((bins,x,y))   # create empty array of same dims to hold the data
+    projection = np.empty_like(data)   # create empty array of same dims to hold the data
     #print(f'Empty bin dimensions: {binned.shape}')
     #print(binned)
     for i in range(x):  # iterate columns 
@@ -158,7 +157,8 @@ def projection(data, xdim, ydim, t):
 
 def convolve_IRF(IRF,decay,time): 
     '''
-    This function convoles a lifetime decay with an instrument response function. 
+    This function convoles a lifetime decay with an instrument response function
+    and plots the IRF and the convolved decay, normalised to the same height.
 
     Parameters
     ----------
@@ -172,14 +172,33 @@ def convolve_IRF(IRF,decay,time):
     convolvedNorm : the convolved decay normalised to the decay counts
 
     '''
-    dx = time[1] - len[0]   # in ns, difference between each bin 
+    dx = time[1] - time[0]   # in ns, difference between each bin 
     convolved = np.convolve(IRF, decay)[:len(time)]*dx 
     convolvedNorm = convolved*(max(decay)/max(convolved))  # for the plotting normalise
     plt.plot(time, decay, label = 'raw decay')
     plt.plot(time, convolvedNorm, label = 'convolved decay')
-    plt.legend(loc = 'upper right')
+    plt.legend(loc = 'upper right', fontsize= 16)
+    plt.xlabel('Time(ns)', fontsize= 16)
+    plt.ylabel('Counts', fontsize= 16)
     plt.show()    
     return convolved, convolvedNorm
+   
+def plot_IRF_decay(IRF,decay,time,scale): 
+    '''
+    This function plots an IRF and any decay, by normalising 
+    them to the same height. 
+    By default it provides a linear plot; passing 'scale = "log"' 
+    plots a logarithmic plot instead. 
+    '''
+    IRFnorm = IRF*(max(decay)/max(IRF))
+    plt.plot(time, IRFnorm, label = 'IRF')
+    plt.plot(time,decay, label = 'Lifetime decay')
+    plt.legend(loc = 'upper right', fontsize= 14)
+    plt.xlabel('Time(ns)', fontsize= 16)
+    plt.ylabel('Counts', fontsize= 16)
+    if scale == 'log': 
+        plt.yscale('log')
+    plt.show()
     
 def read_sdt(cwd, filename): 
     '''
@@ -233,7 +252,8 @@ def process_sdt_image(data):
     '''
     This function takes the SdtObject (raw anisotropy image data) 
     and returns the perpendicular and parallel matrix decays as 3D
-    numpy arrays (third dimension is the photon count in each of the time bins).
+    numpy arrays. The arrays are transposed to have a shape (t,x,y), 
+    as this is the required 
 
     Parameters
     ----------
@@ -242,14 +262,16 @@ def process_sdt_image(data):
     Returns
     -------
     perpimage : uint16 : 3D numpy array holding perpendicular image data 
-    parimage : uint16 : 3D numpy array holding perpendicular image data 
+    transposed into shape (t,x,y).
+    parimage : uint16 : 3D numpy array holding perpendicular image data
+    transposed into shape (t,x,y).
     time : float64 1D numpy array holding the time in seconds 
     timens : float64 1D numpy array holding the time in nanoseconds 
     bins : scalar, number of time bins 
 
     '''
-    perpimage = np.array(data.data[0]) # return an x by y by t matrix 
-    parimage = np.array(data.data[1])
+    perpimage = np.array(data.data[0]).transpose((2,0,1)) # return an x by y by t matrix 
+    parimage = np.array(data.data[1]).transpose((2,0,1))
     time = np.array(data.times[0])   # return array of times in seconds 
     bins = len(time)
     ns = 1000000000
@@ -274,7 +296,7 @@ def process_sdt(data):
     -------
     perpdecay : uint16 array of the perpendicular decay histogram
     pardecay : uint16 array of the parallel decay histogram
-    time : float64 array of the times in seconds
+    time : float64 array of the times in nanoseconds
     bins: number of time bins 
 
     '''
@@ -287,16 +309,18 @@ def process_sdt(data):
     return perpdecay,  pardecay, time, bins   
 
 ## plot decay in log 
-def plot_decay(perpdecay, pardecay, time, scale, title = 'Fluorescence decay'): 
+def plot_decays(perpdecay, pardecay, time, scale, norm = True, title = 'Fluorescence decay'): 
     '''
-    Plots the perpendiculal and parallel decays.
+    Plots the perpendiculal and parallel decays on the same plot.
 
     Parameters
     ----------
     perpdecay : perpendicular component of data as numpy arrays 
     pardecay : parallel component of data as numpy arrays
     time: time vector as numpy array
-    scale : if want log scale, pass "log" as argument; the default is not log (i.e. linear)
+    norm: should both decays be normalised to the same counts? Default is True 
+    scale : if want log scale, pass "log" as argument; otherwise scale = None 
+        (the default is linear)
     title : any string you want as title of your plot; The default is 'Fluorescence decay'.
 
     Returns
@@ -304,13 +328,15 @@ def plot_decay(perpdecay, pardecay, time, scale, title = 'Fluorescence decay'):
     None. Just shows the plot
 
     '''
+    if norm: 
+        perpdecay = perpdecay*(max(pardecay)/max(perpdecay)) 
     fig = plt.figure()
     plt.plot(time, perpdecay, label = 'perpendicular')
     plt.plot(time,pardecay, label = 'parallel')
-    plt.xlabel('Time(ns)')
-    plt.ylabel('Decay')
+    plt.xlabel('Time(ns)', fontsize= 16)
+    plt.ylabel('Counts', fontsize= 16)
     plt.suptitle(title, fontsize= 16)
-    plt.legend(loc = 'upper right')
+    plt.legend(loc = 'upper right', fontsize= 14)
     if scale == 'log':
         plt.yscale('log')
     plt.show()
@@ -396,7 +422,7 @@ def background_subtract(perpdecay, pardecay, time):
     perpdecay = perpdecay - BG
     pardecay = pardecay - BG
     
-    plot_decay(perpdecay, pardecay, time, 'log', 'background corrected')
+    plot_decays(perpdecay, pardecay, time, scale = 'log', title = 'background corrected', norm = False)
     plt.close()
     # Replace all negative values by 0
     #perpdecay = np.where(perpdecay < 0, 0, perpdecay)
@@ -519,7 +545,7 @@ def align_peaks(perpdecay,pardecay, time):
         peak_index = np.argmax(perpdecay)
             
     
-    plot_decay(perpdecay, pardecay, time, 'log', 'Peaks aligned' )
+    plot_decays(perpdecay, pardecay, time, scale = 'log', norm = True, title = 'Peaks aligned')
     plt.pause(5)
     plt.close()
     return perpdecay, pardecay, peak_index, shift
@@ -591,11 +617,11 @@ def plot_lifetimes(DOPCtotal, DPPCtotal, time, scale = True, title = 'Lifetime d
             DOPCtotal = scaler.fit_transform(DOPCtotal.reshape(-1,1))
     plt.plot(time, DOPCtotal, label = 'DOPC')
     plt.plot(time, DPPCtotal, label = 'DPPC:Chol')
-    plt.legend(loc = 'upper right')
+    plt.legend(loc = 'upper right', fontsize = 14)
     plt.suptitle(title, fontsize = 16)
     plt.yscale('log')
-    plt.ylabel('Normalized counts')
-    plt.xlabel('Time (ns')
+    plt.ylabel('Normalized counts', fontsize = 16)
+    plt.xlabel('Time (ns', fontsize = 16)
     plt.show()
     
     
@@ -608,7 +634,7 @@ def plot_anisotropy_decay(perp, par, G, time, bgcorr = True, align = True, from_
     it calculates the anisotropy decay as per [(Ipar - GIperp)/Itotal] and plots it from 
     the peak onwards (pass from_peak = False to plot the entire decay). 
     
-    Returns the full anisotropy decay decay, as well as the peak index of the aligned decays. 
+    Returns the full anisotropy decay, as well as the peak index of the aligned decays. 
     '''
     # first bg correction 
     if bgcorr: 
@@ -630,11 +656,202 @@ def plot_anisotropy_decay(perp, par, G, time, bgcorr = True, align = True, from_
         plt.xlim(time[peak_idx], 50)  # plot only from peak 
     plt.ylim(-0.5,1)
     plt.suptitle(title, fontsize = 16)
-    plt.xlabel('Time (ns')
-    plt.ylabel('Anisotropy (r)')
+    plt.xlabel('Time (ns)',fontsize = 16)
+    plt.ylabel('Anisotropy (r)', fontsize = 16)
     #plt.close()
     return r_decay, peak_idx
+
+
+def choose_anisotropy_limit(r, t, peak_idx):    
+    # chop off data before peak 
+    r = r[peak_idx:]
+    t = t[peak_idx:]
     
+    plt.plot(t,r)
+    plt.xlabel('Time(ns)')
+    plt.ylabel('Anisotropy(r)')
+    plt.ylim([-0.5, 1.0])
+    plt.suptitle('Choose a final point of your decay (1 point)')
+    boundary = plt.ginput(1)    # let user choose 
+    limit_idx = find_nearest_neighbor_index(t,boundary[0])
+    plt.close()    
+    limit_idx = limit_idx[0]  # final point
+    
+    # now chop off data after the user selection
+    r = r[:limit_idx]
+    t = t[:limit_idx]   
+    
+    plt.plot(t,r)
+    plt.xlabel('Time(ns)')
+    plt.ylabel('Anisotropy(r)')
+    plt.ylim([-0.5, 1.0])
+    plt.suptitle('Range that will be analysed')
+    
+    return r,t,limit_idx
+    
+def hindered_model_single_decay(r_decay ,time, peak_idx, r0, rinf, theta, title, smooth_window = 35, smooth_poly = 3,): 
+    '''
+    Inputs: 
+        r_decay - full anistropy decay
+        time '- full time vector 
+        peak_idx - index where the peak is - th6is is wh6ere th6e fit will beg5in from 
+        r0 (initial anisotropy) - initial guess
+        rinf (limiting anisotropy) - initial guess
+        theta (rotational correlation time) - initial guess
+        title of final plot 
+        smooth_window = default 35 
+        smooth6_poly = default 3
+    '''
+    r = r_decay        # anisotropy decay  
+    t = time    # time vector in ns 
+    peak_idx = peak_idx   # index of the aligned peaks
+    
+    # initial parameters 
+    theta_0 = theta 
+    r0_0 = r0 
+    rinf_0 = rinf 
+    
+    # find time at peak- where the fit will begin 
+    #t0 = time[peak_idx]
+    # x = x - t0           # if we want the plot to start from 0 s 
+    
+    # chop off data before peak 
+    r = r[peak_idx:]
+    t = t[peak_idx:]
+    
+    plt.plot(t,r)
+    plt.xlabel('Time(ns)')
+    plt.ylabel('Anisotropy(r)')
+    plt.ylim([-0.5, 1.0])
+    plt.suptitle('Choose a final point of your decay (1 point)')
+    boundary = plt.ginput(1)    # let user choose 
+    limit_idx = find_nearest_neighbor_index(t,boundary[0])
+    plt.close()    
+    limit_idx = limit_idx[0]
+    
+    # now chop off data after the user selection
+    r = r[:limit_idx]
+    t = t[:limit_idx]    
+      
+    # plot selected data that will be analysed
+    plt.plot(t,r)
+    plt.suptitle('Section of data that will be fit')
+    plt.xlabel('Time (ns)')
+    plt.ylabel('Anisotropy(r)')
+    plt.ylim(-0.5, 1.0)
+    plt.show()
+    plt.pause(5)
+    plt.close()
+    
+    # weights - apply Savitzky - Golay filter 
+    # varians is the filtered data 
+    varians = savgol_filter(r, window_length = smooth_window , polyorder = smooth_poly)
+    #varians = np.where(varians < 0.1, 0.1, varians)
+    w = 1/np.sqrt(varians)   # weights 
+      
+    # plot smoothing
+    plt.plot(t, r, label = 'raw data')
+    plt.plot(t, varians, '-k', label = 'Sav Golay filter')
+    plt.suptitle(f'Smoothed data with window {smooth_window}, polyorder {smooth_poly}')
+    plt.legend(loc = 'upper right')
+    plt.xlabel('Time (ns)')
+    plt.ylabel('Anisotropy(r)')
+    plt.ylim([-0.5, 1.0])
+    plt.show()
+    plt.pause(10)
+    plt.close()
+    '''
+    Constant parameters: 
+        r
+        t
+        w*
+    
+    Parameters we are optimising (independent variables) : 
+        p0 = r0
+        p1 = rinf
+        p2 = theta
+        
+    '''
+    
+    # arguments we pass : t + params  that will be optimized when this is finished
+    model_func = lambda t, r0, rinf, theta: (r0-rinf)*np.exp(-np.divide(t,theta)) + rinf
+    
+    # arguments we pass: r, t, w + optimizing params as a list p
+    # calculate residuals - difference between real decay r and the proposed model 
+    # weighted by the weights we calculated above
+    # p is a list of independent vars that will be defined later 
+    error_func = lambda p, r, t, w: (r - model_func(t, p[0], p[1], p[2]))*w
+
+    # initial guesses - p - independent variables
+    #p = [r0, rinf, theta]
+    p0,p1,p2 = r0_0, rinf_0, theta_0
+
+    # minimise sum of squares 
+    # x0 - starting estimate - initial guesses 
+    # args = the additional arguments to the function 
+    full_output = scipy.optimize.leastsq(error_func, x0 = [p0, p1, p2],
+                                  args = (r,t,w),
+                                  full_output = True)
+    
+    params_fit, cov_x, infodict, mesg, ier = full_output
+    
+    if cov_x is None: 
+        print('NLLS could not converge')      
+    else: 
+    
+        #r0, rinf, theta = params_fit   # the solutions found
+    
+        '''
+        Solutions : 
+            params_fit[0] = r0 
+            params_fit[1] = rinf
+            params_fit[2] = theta
+        
+        '''
+        
+        print('full_output - cov_x: {}'.format(cov_x))
+        
+        ## Estimate fit_parameter errors
+        if (len(r) > len([p0, p1, p2])) and cov_x is not None:
+            # calculate reduced chi square (s_sq)
+            s_sq = (error_func(params_fit, r, t, w)**2).sum()/(len(r)-len([p0, p1, p2]))
+            cov_x = cov_x * s_sq
+        else:
+            cov_x = np.inf
+            s_sq = None
+        
+        error = []
+        
+        for i in range(len(params_fit)): 
+            try: 
+                error.append(np.absolute(cov_x[i][i])**0.5)
+            except: 
+                error.append(0.00)
+                
+        pfit_leastsq = params_fit
+        perr_leastsq = np.array(error)
+        
+        print("\n# Fit parameters and parameter errors from leastsq method :")
+        print("pfit = ", pfit_leastsq)
+        print("perr = ", perr_leastsq)
+        print('r0 = {} with error = {}'.format(pfit_leastsq[0],perr_leastsq[0]))
+        print('rinf = {} with error = {}'.format(pfit_leastsq[1],perr_leastsq[1]))
+        print('Theta = {} with error = {}'.format(pfit_leastsq[2],perr_leastsq[2]))
+        print("Reduced chi-square = ", s_sq)
+        
+        # finally, generate fit decay 
+        r_fit = model_func(t, params_fit[0], params_fit[1], params_fit[2])
+        
+        # plot 
+        plt.plot(t, r)
+        plt.plot(t, r_fit, '-r')
+        plt.ylim(-0.5, 1.0)
+        plt.xlabel('Time (ns)', fontsize = 16)
+        plt.ylabel('Anisotropy (r)', fontsize = 16)
+        plt.suptitle(title, fontsize = 16)
+        plt.show()
+        
+        return r_fit, pfit_leastsq, perr_leastsq
 # some small helpers functions 
 
 def count_zeros(perpdecay, pardecay, bins = 4096):
