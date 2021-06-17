@@ -31,6 +31,7 @@ import matplotlib.pyplot as plt
 from sklearn.preprocessing import MinMaxScaler
 from scipy.signal import savgol_filter
 import scipy.optimize
+from PIL import Image
 
 def create_lifetime_decay_img(perp, par, G): 
     '''
@@ -516,8 +517,49 @@ def get_peaks(perp, par):
     print(f'Parallel peak at index {peak_par}')
     return peak_perp, peak_par
 
+def threshold_array(array, thresh, cwd, save = False): 
+    '''
+    This function takes an array and a threshold value. Values
+    equal to and greater than this threshold are set to True, lower
+    values are set to False. It returns a binary T/F array (mask) 
+    (im_bool) which is to be used for selective analysis later. It 
+    also returns a binary image (im_binary) where 0 representive True
+    and 255 represented False values. 
+    Once a suitable threshold is chosen, pass save = True to the 
+    arguments to save the binary image in the cwd under the name 'binarized.png'. 
+    
+    '''
+    im_bool = array >= thresh # T/F mask- true pixels which are higher than the threshhold given 
+    maxval = 255 
+    im_binary = (array > thresh)*maxval # image where True is 255 and False is 0
+    Image.fromarray(np.uint8(im_binary)).show()
+    if save: 
+        Image.fromarray(np.uint8(im_binary)).save('binarized.png')   
+        print(f'Binary image saved at {cwd}.')
+    return im_binary, im_bool
 
-def align_peaks(perpdecay,pardecay, time): 
+def mask2Dto3D(mask2D,array3D): 
+    '''
+    This function takes a 2D T/F array (mask) and 
+    extends it to a 3D mask of desired shape, 
+    as provided by a 3D array. 
+
+    Parameters
+    ----------
+    mask2D : T/F array of shape (x,y) 
+    array3D : array of shape (z,x,y) - image
+    that will be masked 
+
+    Returns
+    -------
+    mask3D : T/F array of shape (z,x,y)
+
+    '''
+    mask3D = np.zeros_like(array3D, bool)
+    mask3D[:,:,:] = mask2D[np.newaxis, :, :]
+    return mask3D
+
+def align_peaks(perpdecay,pardecay, time, plot = True): 
     '''
     Takes three arguments: the arrays of perpendicular and parallel decays and 
     the time array. 
@@ -545,9 +587,10 @@ def align_peaks(perpdecay,pardecay, time):
         peak_index = np.argmax(perpdecay)
             
     
-    plot_decays(perpdecay, pardecay, time, scale = 'log', norm = True, title = 'Peaks aligned')
-    plt.pause(5)
-    plt.close()
+    if plot: 
+        plot_decays(perpdecay, pardecay, time, scale = 'log', norm = True, title = 'Peaks aligned')
+        plt.pause(5)
+        plt.close()
     return perpdecay, pardecay, peak_index, shift
 
 def get_gfactor(Gfact, t, peak_idx):
@@ -630,9 +673,9 @@ def plot_anisotropy_decay(perp, par, G, time, bgcorr = True, align = True, from_
                          title = 'Anisotropy decay'):
     '''
     This function takes the perp and parallel component, as well as the time vector 
-    and the G value. After background subtraction (requires user input) and peak alignment, 
-    it calculates the anisotropy decay as per [(Ipar - GIperp)/Itotal] and plots it from 
-    the peak onwards (pass from_peak = False to plot the entire decay). 
+    and the G value. After optional background subtraction (requires user input) and 
+    peak alignment, it calculates the anisotropy decay as per [(Ipar - GIperp)/Itotal]
+    and plots it from the peak onwards (pass from_peak = False to plot the entire decay). 
     
     Returns the full anisotropy decay, as well as the peak index of the aligned decays. 
     '''
@@ -662,7 +705,31 @@ def plot_anisotropy_decay(perp, par, G, time, bgcorr = True, align = True, from_
     return r_decay, peak_idx
 
 
-def choose_anisotropy_limit(r, t, peak_idx):    
+def choose_anisotropy_limit(r, t, peak_idx):
+    '''
+    This function plots the anisotropy decay from
+    the decay peak onwards, and lets the user choose the 
+    final point where the anisotropy fit will take place. 
+    The model fit range should be chosen such that the 
+    anisotropy is relatively stable and not noisy. 
+    The function returns the chosen anisotropy range,
+    as well as the index of the user-chosen point, 
+    starting from t=0 (not from the peak)
+
+    Parameters
+    ----------
+    r : 1D array of anisotropy decay 
+    t : 1d array pf time in ns 
+    peak_idx : 
+
+    Returns
+    -------
+    r : the chosen anistropy range, from peak to final index
+    t : the time array for the anistropy range, from peak to final index
+    limit_idx : the index of the final final point, 
+    starting from t=0 (not from the peak)
+
+    '''    
     # chop off data before peak 
     r = r[peak_idx:]
     t = t[peak_idx:]
@@ -671,7 +738,7 @@ def choose_anisotropy_limit(r, t, peak_idx):
     plt.xlabel('Time(ns)')
     plt.ylabel('Anisotropy(r)')
     plt.ylim([-0.5, 1.0])
-    plt.suptitle('Choose a final point of your decay (1 point)')
+    plt.suptitle('Choose a final point of your decay (1 point)', fontsize = 16)
     boundary = plt.ginput(1)    # let user choose 
     limit_idx = find_nearest_neighbor_index(t,boundary[0])
     plt.close()    
@@ -682,12 +749,42 @@ def choose_anisotropy_limit(r, t, peak_idx):
     t = t[:limit_idx]   
     
     plt.plot(t,r)
-    plt.xlabel('Time(ns)')
-    plt.ylabel('Anisotropy(r)')
+    plt.xlabel('Time(ns)', fontsize = 16)
+    plt.ylabel('Anisotropy(r)', fontsize = 16)
     plt.ylim([-0.5, 1.0])
     plt.suptitle('Range that will be analysed')
     
+    limit_idx = peak_idx + limit_idx
     return r,t,limit_idx
+
+def highlight_chosen_ani_range(r,t,peak_idx,limit_idx):
+    '''
+    This function plots the full anisotropy decay, and 
+    highlights with vertical lines the range that will 
+    be fit to the model. 
+
+    Parameters
+    ----------
+    r : 1D array of FULL anisotropy decay 
+    t : 1D array of full time series in ns 
+    peak_idx : index where peak starts 
+    limit_idx : index chosen by user for final limit 
+    of anisotropy decay 
+
+    Returns
+    -------
+    None. Just plots the anisotropy decay.
+
+    '''
+    plt.plot(t, r)
+    plt.xlabel('Time(ns)', fontsize = 16)
+    plt.ylabel('Anisotropy(r)', fontsize = 16)
+    plt.axvline(x = t[peak_idx], c = 'r', linewidth = 4)
+    plt.axvline(x = t[limit_idx], c = 'r', linewidth = 4)
+    #plt.fill_between(y = 1.0, x1 = timens[peak_idx_max], x2 = timens[limit_idx], c = ())
+    plt.ylim([-0.5, 1.0])
+    plt.xlim([0,40])
+    plt.show()
     
 def hindered_model_single_decay(r_decay ,time, peak_idx, r0, rinf, theta, title, smooth_window = 35, smooth_poly = 3,): 
     '''
