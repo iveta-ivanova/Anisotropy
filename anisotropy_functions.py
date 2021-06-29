@@ -33,6 +33,21 @@ from scipy.signal import savgol_filter
 import scipy.optimize
 from PIL import Image
 
+def fill_zeros(data):  # think of a better way to do this
+    '''
+    Replace zeros in a 2D array with the average of its neighbouring elements.
+    '''
+    filled = data.copy()
+    count = 0   # count how many zeros will be replaced
+    for i in range(len(filled)-1):
+        if filled[i] == 0: 
+            filled[i] = np.ceil(np.mean([filled[i-1], filled[i+1]], axis = 0))
+            count += 1
+        else: 
+             pass 
+    print(f'Total of {count} zeros have been replaced, {((count/len(data))*100)}% of all values ')     
+    return filled #print(indices)
+
 def create_lifetime_decay_img(perp, par, G): 
     '''
     This function takes the perpendicular and parallel images 
@@ -156,16 +171,18 @@ def projection(data):
             projection[:,i,j] = np.sum(data[:,i,j])  # [:] - sums all of them along the time axis                 
     return projection[0,:,:] 
 
-def convolve_IRF(IRF,decay,time): 
+def convolve_IRF(IRF,decay,time, plot = True): 
     '''
     This function convoles a lifetime decay with an instrument response function
     and plots the IRF and the convolved decay, normalised to the same height.
+    It uses the scipy.signal convolution function. 
 
     Parameters
     ----------
     IRF : numpy array of instrument response function
     decay : numpy array of decay we want to convolve 
     time : numpy array of time vector in nanoseconds 
+    plot : Boolean : default = True
 
     Returns
     -------
@@ -173,16 +190,16 @@ def convolve_IRF(IRF,decay,time):
     convolvedNorm : the convolved decay normalised to the decay counts
 
     '''
-    dx = time[1] - time[0]   # in ns, difference between each bin 
-    convolved = np.convolve(IRF, decay)[:len(time)]*dx 
-    convolvedNorm = convolved*(max(decay)/max(convolved))  # for the plotting normalise
-    plt.plot(time, decay, label = 'raw decay')
-    plt.plot(time, convolvedNorm, label = 'convolved decay')
-    plt.legend(loc = 'upper right', fontsize= 16)
+    convolved = scipy.signal.convolve(IRF, decay, mode = 'full')[:len(time)]
+    convolved_n = convolved * (max(decay)/max(convolved))
+    plt.plot(time, decay, label = 'raw')
+    #plt.plot(time, IRF, label = 'IRF')
+    plt.plot(time, convolved_n, label = 'convolved')
+    plt.legend(loc = 'upper right', fontsize= 14)
     plt.xlabel('Time(ns)', fontsize= 16)
     plt.ylabel('Counts', fontsize= 16)
     plt.show()    
-    return convolved, convolvedNorm
+    return convolved, convolved_n
    
 def plot_IRF_decay(IRF,decay,time,scale): 
     '''
@@ -271,8 +288,8 @@ def process_sdt_image(data):
     bins : scalar, number of time bins 
 
     '''
-    perpimage = np.array(data.data[0]).transpose((2,0,1)) # return an x by y by t matrix 
-    parimage = np.array(data.data[1]).transpose((2,0,1))
+    perpimage = np.array(data.data[1]).transpose((2,0,1)) # return an x by y by t matrix 
+    parimage = np.array(data.data[0]).transpose((2,0,1))
     time = np.array(data.times[0])   # return array of times in seconds 
     bins = len(time)
     ns = 1000000000
@@ -559,7 +576,29 @@ def mask2Dto3D(mask2D,array3D):
     mask3D[:,:,:] = mask2D[np.newaxis, :, :]
     return mask3D
 
-def align_peaks(perpdecay,pardecay, time, plot = True): 
+def apply_savgol(decay, timens, window_size, polynomial, peak_idx = None, limit_idx_from_start = None, range = False, plot = True, norm = True): 
+    '''
+    This function applies the Savitzky Golay filter and plots
+    the smoothed and the raw decay for comparison, normalized 
+    to the same height. 
+    '''
+    savgol = savgol_filter(decay, window_size, polynomial)  # window size, polynomial order
+    if norm:   # normalize to decay height 
+        savgol = savgol * (max(decay)/max(savgol))
+    if plot: 
+        plt.plot(timens, decay, label = 'Raw')
+        plt.plot(timens, savgol, 'r', label = 'SavGol', linewidth = 1)
+        #plt.plot(timens, fullperpsmooth, label = 'Conv')
+        plt.legend(loc = 'upper right')
+        plt.xlabel('Time (ns)',fontsize = 16)
+        plt.ylabel('Anisotropy (r)', fontsize = 16)
+    if range: 
+        plt.xlim(timens[peak_idx], timens[limit_idx_from_start])
+    plt.show()
+    return savgol
+
+
+def align_peaks(perpdecay,pardecay, time, plot = True, norm = True): 
     '''
     Takes three arguments: the arrays of perpendicular and parallel decays and 
     the time array. 
@@ -585,10 +624,9 @@ def align_peaks(perpdecay,pardecay, time, plot = True):
     else:    # and if par decay first, shift the perp one by *shift* 
         perpdecay = np.pad(perpdecay,(0, abs(shift)), mode = 'constant')[abs(shift):] 
         peak_index = np.argmax(perpdecay)
-            
-    
+             
     if plot: 
-        plot_decays(perpdecay, pardecay, time, scale = 'log', norm = True, title = 'Peaks aligned')
+        plot_decays(perpdecay, pardecay, time, scale = False, norm = norm, title = 'Peaks aligned')
         plt.pause(5)
         plt.close()
     return perpdecay, pardecay, peak_index, shift
@@ -786,23 +824,28 @@ def highlight_chosen_ani_range(r,t,peak_idx,limit_idx):
     plt.xlim([0,40])
     plt.show()
     
-def hindered_model_single_decay(r_decay ,time, peak_idx, r0, rinf, theta, title, smooth_window = 35, smooth_poly = 3,): 
+def hindered_model_single_decay(r_decay ,time, peak_idx, r0, rinf, theta, title, smooth_window = 35, smooth_poly = 3, smooth = True): 
     '''
     Inputs: 
         r_decay - full anistropy decay
         time '- full time vector 
-        peak_idx - index where the peak is - th6is is wh6ere th6e fit will beg5in from 
+        peak_idx - index where the peak is - this is where the fit will begin from 
         r0 (initial anisotropy) - initial guess
         rinf (limiting anisotropy) - initial guess
         theta (rotational correlation time) - initial guess
         title of final plot 
         smooth_window = default 35 
         smooth6_poly = default 3
+        smooth = (default True) - should the data be smoothed at all ? 
+    
+    For smoothing, recommended window size and polynomial depend should 
+    be determined empirically and depends on the data resolution. 
+    E.g. for 4096 time bins, it is recommended to start with a window size of 31, 
+    while for 256 time bins, a window size of 7 is a good start. 
     '''
     r = r_decay        # anisotropy decay  
     t = time    # time vector in ns 
-    peak_idx = peak_idx   # index of the aligned peaks
-    
+        
     # initial parameters 
     theta_0 = theta 
     r0_0 = r0 
@@ -811,7 +854,6 @@ def hindered_model_single_decay(r_decay ,time, peak_idx, r0, rinf, theta, title,
     # find time at peak- where the fit will begin 
     #t0 = time[peak_idx]
     # x = x - t0           # if we want the plot to start from 0 s 
-    
     # chop off data before peak 
     r = r[peak_idx:]
     t = t[peak_idx:]
@@ -829,7 +871,8 @@ def hindered_model_single_decay(r_decay ,time, peak_idx, r0, rinf, theta, title,
     # now chop off data after the user selection
     r = r[:limit_idx]
     t = t[:limit_idx]    
-      
+     
+    print(f'First values are t = {t[0]} and r = {r[0]}')
     # plot selected data that will be analysed
     plt.plot(t,r)
     plt.suptitle('Section of data that will be fit')
@@ -842,21 +885,24 @@ def hindered_model_single_decay(r_decay ,time, peak_idx, r0, rinf, theta, title,
     
     # weights - apply Savitzky - Golay filter 
     # varians is the filtered data 
-    varians = savgol_filter(r, window_length = smooth_window , polyorder = smooth_poly)
-    #varians = np.where(varians < 0.1, 0.1, varians)
-    w = 1/np.sqrt(varians)   # weights 
-      
-    # plot smoothing
-    plt.plot(t, r, label = 'raw data')
-    plt.plot(t, varians, '-k', label = 'Sav Golay filter')
-    plt.suptitle(f'Smoothed data with window {smooth_window}, polyorder {smooth_poly}')
-    plt.legend(loc = 'upper right')
-    plt.xlabel('Time (ns)')
-    plt.ylabel('Anisotropy(r)')
-    plt.ylim([-0.5, 1.0])
-    plt.show()
-    plt.pause(10)
-    plt.close()
+    if smooth: 
+        varians = savgol_filter(r, window_length = smooth_window , polyorder = smooth_poly)
+        varians = np.where(varians < 0.1, 0.1, varians)  
+        w = 1/np.sqrt(varians)   # weights 
+        #w = 1/varians
+        # plot smoothing
+        plt.plot(t, r, label = 'raw data')
+        plt.plot(t, varians, '-k', label = 'Sav Golay filter')
+        plt.suptitle(f'Smoothed data with window {smooth_window}, polyorder {smooth_poly}')
+        plt.legend(loc = 'upper right')
+        plt.xlabel('Time (ns)')
+        plt.ylabel('Anisotropy(r)')
+        plt.ylim([-0.5, 1.0])
+        plt.show()
+        plt.pause(10)
+        plt.close()
+    else: 
+        w = np.ones(len(r))
     '''
     Constant parameters: 
         r
@@ -871,6 +917,7 @@ def hindered_model_single_decay(r_decay ,time, peak_idx, r0, rinf, theta, title,
     '''
     
     # arguments we pass : t + params  that will be optimized when this is finished
+    # model we will try to fit to data by modifying r0, inf and theta
     model_func = lambda t, r0, rinf, theta: (r0-rinf)*np.exp(-np.divide(t,theta)) + rinf
     
     # arguments we pass: r, t, w + optimizing params as a list p
@@ -879,8 +926,8 @@ def hindered_model_single_decay(r_decay ,time, peak_idx, r0, rinf, theta, title,
     # p is a list of independent vars that will be defined later 
     error_func = lambda p, r, t, w: (r - model_func(t, p[0], p[1], p[2]))*w
 
-    # initial guesses - p - independent variables
-    #p = [r0, rinf, theta]
+    # now define p - initial guesses - independent variables
+    #p = [p0, p1, p2] = [r0, rinf, theta]
     p0,p1,p2 = r0_0, rinf_0, theta_0
 
     # minimise sum of squares 
@@ -905,7 +952,7 @@ def hindered_model_single_decay(r_decay ,time, peak_idx, r0, rinf, theta, title,
             params_fit[2] = theta
         
         '''
-        
+        print('params: r0 = {params_fit[0]}, rinf = {params_fit[1]}, theta = {params_fit[0]}')
         print('full_output - cov_x: {}'.format(cov_x))
         
         ## Estimate fit_parameter errors
@@ -940,16 +987,30 @@ def hindered_model_single_decay(r_decay ,time, peak_idx, r0, rinf, theta, title,
         r_fit = model_func(t, params_fit[0], params_fit[1], params_fit[2])
         
         # plot 
-        plt.plot(t, r)
-        plt.plot(t, r_fit, '-r')
+        plt.plot(t, r, label = 'raw decay')
+        plt.plot(t, r_fit, '-r', label = 'fit')
+        plt.plot(t, varians, '-k', label = 'Sav Golay filter')
         plt.ylim(-0.5, 1.0)
         plt.xlabel('Time (ns)', fontsize = 16)
         plt.ylabel('Anisotropy (r)', fontsize = 16)
-        plt.suptitle(title, fontsize = 16)
+        #plt.suptitle(title, fontsize = 16)
+        plt.legend(loc = 'upper right')
         plt.show()
         
         return r_fit, pfit_leastsq, perr_leastsq
 # some small helpers functions 
+def print_decay_stats(decay): 
+    bins = decay.shape[0]    
+    print(f'Number of time bins: {bins}')
+    print('-------------')
+    print('Number of NaNs:')
+    print(f'{sum(np.isnan(decay))} NaN values, or {((sum(np.isnan(decay))/bins)*100).round(1)} % of all bins.')
+    print('-------------')
+    print('Number of zero values:')
+    print(f'{bins-np.count_nonzero(decay)} zero values, or {(((bins-np.count_nonzero(decay))/bins)*100)} % of all bins.')
+    print('-------------')
+    print('Number of negative values:')
+    print(f'{sum(np.array(decay)<0)} negative values, or {(((sum(np.array(decay)<0))/bins)*100).round(1)} % of all bins.')
 
 def count_zeros(perpdecay, pardecay, bins = 4096):
     '''
